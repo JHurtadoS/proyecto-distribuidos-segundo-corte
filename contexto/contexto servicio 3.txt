@@ -1,0 +1,260 @@
+# Fase 3 – Microservicio *Verificador Tablero*
+
+> *Objetivo:* custodiar el estado del juego (tablero 10 × 20), validar la ubicación/movimiento de piezas según reglas clásicas de Tetris, fijar piezas y limpiar líneas completas.
+>
+> Este servicio es idéntico en las ramas **coordinada* y *orquestada: los demás microservicios (o el middleware) lo invocan, pero VerificadorTablero *no* llama a nadie.
+>
+> *Framework:* NestJS + TypeScript.
+> *Documentación:* Swagger (OpenAPI 3) accesible en /api.
+
+---
+
+## 0 ▪ Prerrequisito común
+
+Incluya **REGLAS_COMUNES.md** en la raíz del servicio y en la imagen Docker (COPY REGLAS_COMUNES.md ./).
+
+---
+
+## 1 ▪ Estructura de carpetas
+
+text
+/verificadortablero-service
+└── src
+    ├── dto
+    │   ├── tablero.dto.ts
+    │   ├── actualizar-tablero.dto.ts
+    │   └── pieza-activa.dto.ts
+    ├── models
+    │   └── pieza-activa.interface.ts
+    ├── repository
+    │   └── tablero.repository.ts
+    ├── verificadortablero.service.ts
+    ├── verificadortablero.controller.ts
+    ├── verificadortablero.module.ts
+    └── main.ts
+├── Dockerfile
+├── package.json
+└── REGLAS_COMUNES.md
+
+
+---
+
+## 2 ▪ Modelos y tipos
+
+ts
+// src/models/pieza-activa.interface.ts
+import { TetraminoDto } from "../../generador-service/src/dto/tetramino.dto";
+
+export interface PiezaActiva {
+  tetramino: TetraminoDto; // matriz 4×4
+  x: number;               // columna superior‑izquierda
+  y: number;               // fila superior‑izquierda
+}
+
+
+---
+
+## 3 ▪ DTOs
+
+ts
+// src/dto/tablero.dto.ts
+import { ApiProperty } from '@nestjs/swagger';
+
+export class TableroDto {
+  @ApiProperty({ description: 'Matriz 20×10 del tablero', type: [ [Number] ] })
+  estado: number[][]; // 20 filas × 10 columnas (0 ó 1)
+}
+
+
+ts
+// src/dto/actualizar-tablero.dto.ts
+import { TetraminoDto } from '../../../generador-service/src/dto/tetramino.dto';
+import { ApiProperty } from '@nestjs/swagger';
+
+export class ActualizarTableroDto {
+  @ApiProperty({ type: TetraminoDto })
+  tetramino: TetraminoDto;
+  @ApiProperty({ example: 3 }) x: number;
+  @ApiProperty({ example: 0 }) y: number;
+}
+
+
+ts
+// src/dto/pieza-activa.dto.ts
+import { ApiProperty } from '@nestjs/swagger';
+import { TetraminoDto } from '../../../generador-service/src/dto/tetramino.dto';
+
+export class PiezaActivaDto {
+  @ApiProperty({ type: TetraminoDto })
+  tetramino: TetraminoDto;
+  @ApiProperty() x: number;
+  @ApiProperty() y: number;
+}
+
+
+---
+
+## 4 ▪ Repositorio in‑memory
+
+ts
+// src/repository/tablero.repository.ts
+import { Injectable } from '@nestjs/common';
+import { PiezaActiva } from '../models/pieza-activa.interface';
+
+@Injectable()
+export class TableroRepository {
+  private matriz: number[][] = [];
+  private piezaActiva: PiezaActiva | null = null;
+
+  getMatriz() { return this.matriz; }
+  setMatriz(m: number[][]) { this.matriz = m; }
+
+  getPiezaActiva() { return this.piezaActiva; }
+  setPiezaActiva(p: PiezaActiva | null) { this.piezaActiva = p; }
+}
+
+
+---
+
+## 5 ▪ Servicio (verificadortablero.service.ts)
+
+Funcionalidades clave:
+
+1. **iniciarTablero()**
+
+   * Genera matriz 20 × 10 llena de 0 y la persiste en el repositorio.
+   * piezaActiva = null.
+2. **obtenerTablero()**
+
+   * Clona matriz fija.
+   * Si existe piezaActiva, superpone sus 1 sobre la copia.
+   * Devuelve TableroDto.
+3. **obtenerPiezaActiva()** → PiezaActivaDto | null.
+4. **colocarPieza(dto: ActualizarTableroDto): boolean**
+
+   * Si piezaActiva === null ⇒ inserción nueva.
+   * De lo contrario ⇒ intento de mover/rotar pieza actual.
+   * *Validaciones*: dentro de límites, sin colisión con bloques fijos.
+   * Si válido ⇒ actualiza piezaActiva con nueva matriz/coords y devuelve true.
+   * Si no válido ⇒
+
+     * Si era movimiento abajo → fija pieza, añade a bloques fijos, limpia líneas completas (shift + fila vacía arriba), piezaActiva = null, devuelve false (indica que ya no pudo bajar).
+     * Caso nueva pieza y falla en y=0 ⇒ GAME_OVER (retorna false).
+   * Limpieza de líneas: recorre filas, si todas 1 ⇒ splice + unshift fila vacía.
+
+> *Optimización*: use funciones auxiliares estaDentro(), hayColision(), clonarMatriz().
+
+---
+
+## 6 ▪ Controlador (verificadortablero.controller.ts)
+
+Endpoints y Swagger:
+
+ts
+@ApiTags('VerificadorTablero')
+@Controller('tablero')
+export class VerificadorTableroController {
+  constructor(private readonly svc: VerificadorTableroService) {}
+
+  @Post('iniciar')
+  @ApiOperation({ summary: 'Iniciar nuevo tablero' })
+  @ApiResponse({ status: 201, type: TableroDto })
+  iniciar() { return this.svc.iniciarTablero(); }
+
+  @Get()
+  @ApiResponse({ status: 200, type: TableroDto })
+  obtener() { return this.svc.obtenerTablero(); }
+
+  @Get('activo')
+  @ApiResponse({ status: 200, type: PiezaActivaDto })
+  activo() { return this.svc.obtenerPiezaActiva(); }
+
+  @Post('colocar')
+  @ApiBody({ type: ActualizarTableroDto })
+  @ApiResponse({ status: 200, schema: { example: { exito: true } } })
+  colocar(@Body() dto: ActualizarTableroDto) { return this.svc.colocarPieza(dto); }
+}
+
+
+---
+
+## 7 ▪ Swagger habilitación
+
+En main.ts (similar a fases anteriores):
+
+ts
+if (process.env.NODE_ENV !== 'production') {
+  const cfg = new DocumentBuilder()
+    .setTitle('Verificador Tablero')
+    .setVersion('1.0')
+    .addTag('VerificadorTablero')
+    .build();
+  const doc = SwaggerModule.createDocument(app, cfg);
+  SwaggerModule.setup('api', app, doc);
+}
+
+
+---
+
+## 8 ▪ Dockerfile
+
+dockerfile
+FROM node:18-alpine
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci --silent
+COPY . .
+RUN npm run build
+COPY REGLAS_COMUNES.md ./
+ENV PORT=3000
+EXPOSE $PORT
+CMD ["node", "dist/main.js"]
+
+
+---
+
+## 9 ▪ Variables de entorno
+
+| Variable   | Descripción                   |
+| ---------- | ----------------------------- |
+| PORT     | Puerto HTTP (3000)            |
+| NODE_ENV | development \| production |
+
+> *No necesita URLs de otros servicios.*
+
+---
+
+## 10 ▪ Snippet docker-compose.yml
+
+yaml
+verificadortablero:
+  build: ./verificadortablero-service
+  container_name: verificadortablero
+  environment:
+    - PORT=3000
+  networks:
+    - tetris-net
+
+
+Recuerde añadir verificadortablero en *depends\_on* de Generador, Girador y Deslizador.
+
+---
+
+## 11 ▪ Checklist REGLAS_COMUNES.md
+
+* [x] Matriz fija 20 × 10 con valores 0|1.
+* [x] Limita tetramino a matriz 4 × 4.
+* [x] Respuestas normalizadas { exito, motivo? } donde aplique.
+* [x] Copia literal de REGLAS_COMUNES.md en contenedor.
+* [x] Endpoints documentados con Swagger.
+
+---
+
+### ✔ Prueba rápida
+
+1. docker compose up verificadortablero (expondrá Swagger en localhost:3003/api).
+2. POST /tablero/iniciar → debe regresar matriz vacía.
+3. Cree manualmente un cuerpo ActualizarTableroDto con una pieza *O* en (x=4,y=0) y llame a POST /tablero/colocar → exito:true.
+4. GET /tablero deberá reflejar la pieza en la parte superior.
+
+Con esto, el núcleo del juego ya está operativo y listo para integrarse con los demás microservicios.

@@ -1,0 +1,253 @@
+# Fase 5 – Microservicio *Cliente / API Gateway*
+
+> *Rol:* exponer al jugador una interfaz REST unificada para iniciar partida, generar piezas y moverlas. Internamente reenvía las peticiones a los microservicios adecuados.
+>
+> • *Modo *coordinado** → llama a Generador, Girador, Deslizador y VerificadorTablero.
+> • *Modo *orquestado** → llama principalmente al Middleware y, opcionalmente, al Tablero para lecturas.
+>
+> Framework: NestJS + TypeScript   |   Swagger UI en /api   |   REGLAS\_COMUNES.md incluido.
+
+---
+
+## 0 ▪ REGLAS\_COMUNES.md
+
+Copiar a la raíz del servicio y agregar al Dockerfile:
+
+dockerfile
+COPY REGLAS_COMUNES.md ./
+
+
+---
+
+## 1 ▪ Estructura de carpetas
+
+text
+/cliente-service
+└── src
+    ├── dto
+    │   ├── direccion.dto.ts      # re‑uso para girar y deslizar
+    │   └── respuesta-exito.dto.ts
+    ├── cliente.controller.ts
+    ├── cliente.service.ts
+    ├── cliente.module.ts
+    └── main.ts
+├── Dockerfile
+├── package.json
+└── REGLAS_COMUNES.md
+
+
+---
+
+## 2 ▪ DTOs reutilizados / nuevos
+
+### direccion.dto.ts
+
+ts
+import { ApiProperty } from '@nestjs/swagger';
+export class DireccionDto {
+  @ApiProperty({ enum: ['izquierda','derecha','abajo'] })
+  direccion: 'izquierda' | 'derecha' | 'abajo';
+}
+
+
+### respuesta-exito.dto.ts
+
+ts
+import { ApiProperty } from '@nestjs/swagger';
+export class RespuestaExitoDto {
+  @ApiProperty() exito: boolean;
+  @ApiProperty({ required: false }) motivo?: string;
+}
+
+
+> MovimientoDto definido en Deslizador puede importarse en vez de DireccionDto si se prefiere.
+
+---
+
+## 3 ▪ Servicio (cliente.service.ts)
+
+ts
+@Injectable()
+export class ClienteService {
+  constructor(private readonly http: HttpService) {}
+
+  private get url() {
+    const modo = process.env.MODO ?? 'coordinada';
+    return {
+      generador:  process.env.GENERADOR_URL  || 'http://generador:3000',
+      girador:    process.env.GIRADOR_URL    || 'http://girador:3000',
+      deslizador: process.env.DESLIZADOR_URL || 'http://deslizador:3000',
+      tablero:    process.env.TABLERO_URL    || 'http://verificadortablero:3000',
+      middleware: process.env.MIDDLEWARE_URL || 'http://middleware:3000',
+      modo,
+    };  }
+
+  /* ---------- API pública ---------- */
+  async iniciarJuego() {
+    const base = this.url;
+    const target = base.tablero + '/tablero/iniciar';
+    const { data } = await this.http.post(target).toPromise();
+    return data; // TableroDto
+  }
+
+  async generarTetramino() {
+    const base = this.url;
+    const target = base.modo === 'coordinada'
+      ? base.generador + '/tetramino'
+      : base.middleware + '/middleware/tetramino';
+    const { data } = await this.http.post(target).toPromise();
+    return data; // { exito }
+  }
+
+  async girar(direccion: 'izquierda' | 'derecha') {
+    const base = this.url;
+    const target = base.modo === 'coordinada'
+      ? base.girador + '/rotar'
+      : base.middleware + '/middleware/girar';
+    const { data } = await this.http.post(target, { direccion }).toPromise();
+    return data;
+  }
+
+  async deslizar(direccion: 'izquierda' | 'derecha' | 'abajo') {
+    const base = this.url;
+    const target = base.modo === 'coordinada'
+      ? base.deslizador + '/deslizar'
+      : base.middleware + '/middleware/deslizar';
+    const { data } = await this.http.post(target, { direccion }).toPromise();
+    return data;
+  }
+
+  async obtenerTablero() {
+    const base = this.url;
+    const target = base.tablero + '/tablero'; // lectura directa en ambos modos
+    const { data } = await this.http.get(target).toPromise();
+    return data; // TableroDto
+  }
+}
+
+
+---
+
+## 4 ▪ Controlador (cliente.controller.ts)
+
+ts
+@ApiTags('Cliente')
+@Controller('juego')
+export class ClienteController {
+  constructor(private readonly svc: ClienteService) {}
+
+  @Post('iniciar')
+  @ApiResponse({ status: 201, description: 'Tablero vacío' })
+  iniciar() { return this.svc.iniciarJuego(); }
+
+  @Post('tetramino')
+  @ApiResponse({ status: 201, type: RespuestaExitoDto })
+  nuevoTetramino() { return this.svc.generarTetramino(); }
+
+  @Post('girar')
+  @ApiBody({ type: DireccionDto })
+  @ApiResponse({ status: 200, type: RespuestaExitoDto })
+  girar(@Body() dir: DireccionDto) { return this.svc.girar(dir.direccion as any); }
+
+  @Post('deslizar')
+  @ApiBody({ type: DireccionDto })
+  @ApiResponse({ status: 200, type: RespuestaExitoDto })
+  mover(@Body() dir: DireccionDto) { return this.svc.deslizar(dir.direccion as any); }
+
+  @Get('tablero')
+  @ApiResponse({ status: 200, description: 'Estado actual del tablero' })
+  tablero() { return this.svc.obtenerTablero(); }
+}
+
+
+---
+
+## 5 ▪ Swagger setup
+
+Igual a los anteriores: en main.ts configure DocumentBuilder con tag Cliente.
+
+---
+
+## 6 ▪ Dockerfile
+
+dockerfile
+FROM node:18-alpine
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci --silent
+COPY . .
+RUN npm run build
+COPY REGLAS_COMUNES.md ./
+ENV PORT=3000
+EXPOSE $PORT
+CMD ["node", "dist/main.js"]
+
+
+---
+
+## 7 ▪ Variables de entorno
+
+| Var              | Usado cuando | Descripción                  |
+| ---------------- | ------------ | ---------------------------- |
+| PORT           | siempre      | Puerto (3000)                |
+| MODO           | siempre      | coordinada \| orquestada |
+| GENERADOR_URL  | coordinada   | URL Generador                |
+| GIRADOR_URL    | coordinada   | URL Girador                  |
+| DESLIZADOR_URL | coordinada   | URL Deslizador               |
+| TABLERO_URL    | ambos        | URL VerificadorTablero       |
+| MIDDLEWARE_URL | orquestada   | URL Middleware               |
+
+---
+
+## 8 ▪ Snippet docker-compose.yml
+
+yaml
+cliente:
+  build: ./cliente-service
+  container_name: cliente
+  environment:
+    - PORT=3000
+    - MODO=${MODO:-coordinada}
+    - GENERADOR_URL=http://generador:3000
+    - GIRADOR_URL=http://girador:3000
+    - DESLIZADOR_URL=http://deslizador:3000
+    - TABLERO_URL=http://verificadortablero:3000
+    - MIDDLEWARE_URL=http://middleware:3000
+  ports:
+    - "8080:3000"   # puerta de entrada externa
+  depends_on:
+    - verificadortablero
+    - generador
+    - girador
+    - deslizador
+    - middleware     # sólo existirá en rama orquestada
+  networks:
+    - tetris-net
+
+
+---
+
+## 9 ▪ Checklist REGLAS\_COMUNES.md
+
+* [x] Endpoints de alto nivel respetan matrices 10×20.
+* [x] Respuestas { exito, motivo? } donde proceda.
+* [x] Todas las URLs externas son variables de entorno.
+* [x] Markdown de reglas copiado.
+* [x] Swagger documenta cada endpoint.
+
+---
+
+### ✔ Prueba de humo coordinada
+
+1. docker compose up verificadortablero generador girador deslizador cliente.
+2. POST http://localhost:8080/juego/iniciar → devuelve matriz vacía.
+3. POST /juego/tetramino → exito:true.
+4. GET /juego/tablero → pieza visible en fila 0.
+
+### ✔ Prueba de humo orquestada
+
+1. Cambie .env: MODO=orquestada.
+2. Levante servicios incluyendo middleware.
+3. POST /juego/tetramino ahora debe llegar al Middleware y completar el flujo.
+
+¡El API Gateway queda operativo, cerrando la capa de interacción del jugador! 🚀

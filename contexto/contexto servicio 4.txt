@@ -1,0 +1,224 @@
+# Fase 4 – Microservicio *Deslizador*
+
+> *Propósito:* desplazar la *pieza activa* una posición a la izquierda, derecha o abajo.
+>
+> • *Rama *coordinada:** Deslizador *consulta y actualiza* el Tablero (igual que Girador).
+> • *Rama *orquestada:** actúa como pura función de cálculo: recibe la pieza + coords y devuelve la nueva posición; el Middleware realiza la actualización.
+>
+> Framework · NestJS + TS   |   Swagger UI en /api |  REGLAS\_COMUNES.md obligatorio.
+
+---
+
+## 0 ▪ REGLAS\_COMUNES.md
+
+Copie sin alterar a la raíz del proyecto y añada al Dockerfile:
+
+dockerfile
+COPY REGLAS_COMUNES.md ./
+
+
+---
+
+## 1 ▪ Estructura sugerida
+
+text
+/deslizador-service
+└── src
+    ├── dto
+    │   ├── movimiento.dto.ts
+    │   └── movimiento-response.dto.ts
+    ├── models (reusa PiezaActiva/Tetramino)
+    ├── deslizador.controller.ts
+    ├── deslizador.service.ts
+    ├── deslizador.module.ts
+    └── main.ts
+├── Dockerfile
+├── package.json
+└── REGLAS_COMUNES.md
+
+
+---
+
+## 2 ▪ DTOs
+
+ts
+// src/dto/movimiento.dto.ts
+import { ApiProperty } from '@nestjs/swagger';
+
+export class MovimientoDto {
+  @ApiProperty({ enum: ['izquierda', 'derecha', 'abajo'] })
+  direccion: 'izquierda' | 'derecha' | 'abajo';
+}
+
+
+ts
+// src/dto/movimiento-response.dto.ts
+import { ApiProperty } from '@nestjs/swagger';
+
+export class MovimientoResponseDto {
+  @ApiProperty() exito: boolean;
+  @ApiProperty({ required: false }) motivo?: string; // p.ej. 'COLISION' | 'FUERA_DE_RANGO' | 'FIJADA'
+}
+
+
+---
+
+## 3 ▪ Servicio (deslizador.service.ts)
+
+ts
+@Injectable()
+export class DeslizadorService {
+  constructor(private readonly http: HttpService) {}
+
+  private calcNuevaPos(x: number, y: number, dir: MovimientoDto['direccion']) {
+    switch (dir) {
+      case 'izquierda':  return { x: x - 1, y };
+      case 'derecha':    return { x: x + 1, y };
+      case 'abajo':      return { x,       y: y + 1 };
+    }
+  }
+
+  /** Versión coordinada – orquesta la llamada al tablero */
+  async moverPieza(direccion: MovimientoDto['direccion']): Promise<MovimientoResponseDto> {
+    if (process.env.MODO !== 'coordinada')
+      throw new Error('Método sólo válido en modo coordinado');
+
+    // 1. obtener pieza activa
+    const activo = (await this.http.get(`${process.env.TABLERO_URL}/tablero/activo`)).data;
+    if (!activo) return { exito: false, motivo: 'SIN_PIEZA_ACTIVA' };
+
+    // 2. calcular nueva posición
+    const { x: nx, y: ny } = this.calcNuevaPos(activo.x, activo.y, direccion);
+
+    // 3. solicitar colocación
+    const { data } = await this.http.post(`${process.env.TABLERO_URL}/tablero/colocar`, {
+      tetramino: activo.tetramino,
+      x: nx,
+      y: ny,
+    });
+
+    /* si dir==abajo && !data.exito ⇒ pieza fijada */
+    return {
+      exito: data.exito,
+      motivo: !data.exito && direccion === 'abajo' ? 'FIJADA' : (data.exito ? undefined : 'COLISION'),
+    };
+  }
+
+  /** Versión orquestada – pura función */
+  calcMovimientoPure(activo: { x: number; y: number }, dir: MovimientoDto['direccion']) {
+    return this.calcNuevaPos(activo.x, activo.y, dir);
+  }
+}
+
+
+---
+
+## 4 ▪ Controlador (deslizador.controller.ts)
+
+ts
+@ApiTags('Deslizador')
+@Controller('deslizar')
+export class DeslizadorController {
+  constructor(private readonly svc: DeslizadorService) {}
+
+  // Endpoint oficial para jugador / cliente en coordinada
+  @Post()
+  @ApiOperation({ summary: 'Mover pieza activa una casilla' })
+  @ApiBody({ type: MovimientoDto })
+  @ApiResponse({ status: 200, type: MovimientoResponseDto })
+  mover(@Body() dto: MovimientoDto) {
+    return this.svc.moverPieza(dto.direccion);
+  }
+
+  // Endpoint opcional — sólo para orquestada (pura función)
+  @Post('calcular')
+  @ApiOperation({ summary: '[Orquestada] Solo calcula nueva posición' })
+  @ApiBody({ schema: { example: { x: 3, y: 0, direccion: 'derecha' } } })
+  calcular(@Body() body: { x: number; y: number; direccion: MovimientoDto['direccion'] }) {
+    const coords = this.svc.calcMovimientoPure({ x: body.x, y: body.y }, body.direccion);
+    return { ...coords };
+  }
+}
+
+
+> *Nota: Exporte el segundo endpoint **sólo* cuando process.env.MODO==='orquestada' para evitar confusión. Puede hacerse con un guard simple o usando @SetMetadata('mode','orquestada') y un ModesGuard.
+
+---
+
+## 5 ▪ Swagger habilitación
+
+Igual que antes.
+
+---
+
+## 6 ▪ Dockerfile
+
+dockerfile
+FROM node:18-alpine
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci --silent
+COPY . .
+RUN npm run build
+COPY REGLAS_COMUNES.md ./
+ENV PORT=3000
+EXPOSE $PORT
+CMD ["node", "dist/main.js"]
+
+
+---
+
+## 7 ▪ Variables de entorno
+
+| Variable      | Descripción                   |
+| ------------- | ----------------------------- |
+| PORT        | Puerto (3000)                 |
+| MODO        | coordinada \| orquestada  |
+| TABLERO_URL | URL tablero (solo coordinada) |
+
+---
+
+## 8 ▪ Snippet docker-compose.yml
+
+yaml
+deslizador:
+  build: ./deslizador-service
+  container_name: deslizador
+  environment:
+    - PORT=3000
+    - MODO=${MODO:-coordinada}
+    - TABLERO_URL=http://verificadortablero:3000
+  depends_on:
+    - verificadortablero
+  networks:
+    - tetris-net
+
+
+---
+
+## 9 ▪ Checklist REGLAS\_COMUNES.md
+
+* [x] Usa movimiento unitario.
+* [x] No rompe el tamaño 10×20.
+* [x] Respuesta { exito, motivo? }.
+* [x] Archivo REGLAS\_COMUNES.md copiado.
+* [x] Swagger completo.
+
+---
+
+### ✔ Prueba rápida
+
+*Modo coordinado*
+
+1. docker compose up verificadortablero deslizador.
+2. Inicie tablero (POST /tablero/iniciar).
+3. Inserte manualmente una pieza activa (POST /tablero/colocar).
+4. Haga POST /deslizar con { "direccion":"izquierda" } → exito:true.
+5. Verifique la nueva posición con GET /tablero.
+
+*Modo orquestado*
+
+1. MODO=orquestada docker compose up deslizador.
+2. POST /deslizar/calcular con { x:4, y:0, direccion:'abajo' } → debe devolver { x:4, y:1 }.
+
+¡Con esto, el microservicio Deslizador queda listo para integrarse al flujo del juego!

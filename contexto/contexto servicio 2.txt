@@ -1,0 +1,211 @@
+# Fase 2 – Microservicio *Girador*
+
+> *Propósito:* recibir un tetramino y devolver una versión rotada 90° en la dirección solicitada, garantizando consistencia con las reglas de Tetris.
+> En la rama **coordinada, este servicio *puede* actualizar el tablero cuando el giro proviene del jugador.
+> En la rama **orquestada, actúa como función pura: sólo transforma y devuelve la pieza; la actualización la realiza el Middleware.
+
+---
+
+## 0 ▪ Prerrequisitos compartidos
+
+El archivo **REGLAS_COMUNES.md** debe copiarse tal cual en la raíz de todos los contenedores, incluido *Girador*.
+Añadir la línea al Dockerfile:
+
+dockerfile
+COPY REGLAS_COMUNES.md ./
+
+
+---
+
+## 1 ▪ Estructura de carpetas
+
+text
+/girador-service
+└── src
+    ├── dto
+    │   ├── rotacion-request.dto.ts
+    │   └── rotacion-response.dto.ts
+    ├── models               # reutiliza modelos del generador via npm‐link o tsconfig "paths"
+    ├── girador.controller.ts
+    ├── girador.service.ts
+    ├── girador.module.ts
+    └── main.ts
+├── Dockerfile
+├── package.json
+└── REGLAS_COMUNES.md
+
+
+---
+
+## 2 ▪ DTOs
+
+ts
+// src/dto/rotacion-request.dto.ts
+import { TetraminoDto } from '../../../generador-service/src/dto/tetramino.dto';
+import { ApiProperty } from '@nestjs/swagger';
+
+export class RotacionRequestDto {
+  @ApiProperty({ type: TetraminoDto })
+  tetramino: TetraminoDto;
+
+  @ApiProperty({ enum: ['izquierda', 'derecha'] })
+  direccion: 'izquierda' | 'derecha';
+}
+
+
+ts
+// src/dto/rotacion-response.dto.ts
+import { ApiProperty } from '@nestjs/swagger';
+import { TetraminoDto } from '../../../generador-service/src/dto/tetramino.dto';
+
+export class RotacionResponseDto {
+  @ApiProperty({ type: TetraminoDto })
+  tetramino: TetraminoDto;
+
+  @ApiProperty()
+  exito: boolean;      // false sólo si tablero rechazó el giro (rama coordinada)
+
+  @ApiProperty({ required: false })
+  motivo?: string;     // p.ej. 'COLISION' ó 'FUERA_DE_RANGO'
+}
+
+
+---
+
+## 3 ▪ Servicio (girador.service.ts)
+
+ts
+@Injectable()
+export class GiradorService {
+  private rotarMatriz(m: number[][], dir: 'izquierda' | 'derecha'): number[][] {
+    const n = 4;
+    const out = Array.from({ length: n }, () => Array(n).fill(0));
+    for (let i = 0; i < n; i++)
+      for (let j = 0; j < n; j++) {
+        if (dir === 'derecha') out[i][j] = m[n - 1 - j][i];
+        else out[i][j] = m[j][n - 1 - i];
+      }
+    return out;
+  }
+
+  async rotar(dto: RotacionRequestDto): Promise<RotacionResponseDto> {
+    const piezaRotada = {
+      ...dto.tetramino,
+      matriz: this.rotarMatriz(dto.tetramino.matriz, dto.direccion),
+    };
+
+    if (process.env.MODO === 'coordinada' && dto['actualizarTablero']) {
+      // el campo actualizarTablero es opcional: true cuando el cliente rota la pieza activa
+      const ok = await this.actualizarTablero(piezaRotada);
+      return { tetramino: piezaRotada, exito: ok, motivo: ok ? undefined : 'COLISION' };
+    }
+
+    return { tetramino: piezaRotada, exito: true };
+  }
+
+  /** Sólo rama coordinada */
+  private async actualizarTablero(tetramino: TetraminoDto): Promise<boolean> {
+    const url = process.env.TABLERO_URL + '/tablero/colocar';
+    // asumir axios instalado
+    const { data } = await this.http.post(url, {
+      tetramino,
+      // x, y actuales vendrán en request o se obtienen vía /tablero/activo – simplificado aquí
+    });
+    return data?.exito ?? false;
+  }
+}
+
+
+---
+
+## 4 ▪ Controlador (girador.controller.ts)
+
+ts
+@ApiTags('Girador')
+@Controller('rotar')
+export class GiradorController {
+  constructor(private readonly svc: GiradorService) {}
+
+  @Post()
+  @ApiOperation({ summary: 'Rotar un tetramino 90°' })
+  @ApiBody({ type: RotacionRequestDto })
+  @ApiResponse({ status: 200, type: RotacionResponseDto })
+  rotar(@Body() dto: RotacionRequestDto) {
+    return this.svc.rotar(dto);
+  }
+}
+
+
+---
+
+## 5 ▪ Swagger
+
+Mismo patrón que en Generador: habilitado en main.ts, UI accesible en /api.
+
+---
+
+## 6 ▪ Dockerfile
+
+dockerfile
+FROM node:18-alpine
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci --silent
+COPY . .
+RUN npm run build
+COPY REGLAS_COMUNES.md ./
+ENV PORT=3000
+EXPOSE $PORT
+CMD ["node", "dist/main.js"]
+
+
+---
+
+## 7 ▪ Variables de entorno
+
+| Variable      | Descripción                                           |
+| ------------- | ----------------------------------------------------- |
+| PORT        | Puerto del servicio (default 3000)                    |
+| MODO        | coordinada \| orquestada                          |
+| TABLERO_URL | URL del servicio VerificadorTablero (solo coordinada) |
+
+---
+
+## 8 ▪ Snippet docker-compose.yml
+
+yaml
+girador:
+  build: ./girador-service
+  container_name: girador
+  environment:
+    - PORT=3000
+    - MODO=${MODO:-coordinada}
+    - TABLERO_URL=http://verificadortablero:3000
+  depends_on:
+    - verificadortablero
+  networks:
+    - tetris-net
+
+
+---
+
+## 9 ▪ Checklist de cumplimiento REGLAS_COMUNES.md
+
+* [x] Utiliza matriz 4 × 4 con valores 0|1.
+* [x] Enum TetraminoTipo importado sin modificaciones.
+* [x] Respuesta { tetramino, exito, motivo? }.
+* [x] Incluye REGLAS_COMUNES.md en la imagen.
+* [x] Swagger documenta Request – Response.
+
+---
+
+> *Prueba rápida*
+>
+> 1. Levanta VerificadorTablero (docker compose up verificadortablero).
+> 2. Levanta Girador en *modo orquestado*:
+>
+>    bash
+>    MODO=orquestada docker compose up girador
+>    
+> 3. POST a localhost:3002/rotar con un cuerpo que contenga un tetramino válido y direccion='derecha'.
+> 4. Verifica en Swagger que la matriz rotada sea correcta.
