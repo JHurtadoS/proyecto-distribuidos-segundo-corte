@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Tetris Game</title>
+    <!-- Tailwind CSS via CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Preact via CDN -->
+    <script type="module">
+      import { h, render } from "https://esm.sh/preact";
+      import { useState, useEffect } from "https://esm.sh/preact/hooks";
+      window.preact = { h, render, useState, useEffect };
+    </script>
+    <!-- Main JavaScript -->
+    <script type="module" src="./src/main.js"></script>
+  </head>
+  <body class="bg-gray-800 text-white min-h-screen">
+    <div id="app" class="container mx-auto px-4 py-8"></div>
+  </body>
+</html>

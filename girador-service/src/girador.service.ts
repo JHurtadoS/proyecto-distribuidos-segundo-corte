@@ -20,33 +20,105 @@ export class GiradorService {
         return out;
     }
 
-    async rotar(dto: RotacionRequestDto): Promise<RotacionResponseDto> {
-        // Create a new rotated tetramino
-        const piezaRotada = {
-            ...dto.tetramino,
-            matriz: this.rotarMatriz(dto.tetramino.matriz, dto.direccion),
-        };
-
-        // In coordinated mode, update the board if requested
-        if (process.env.MODO === 'coordinada' && dto.actualizarTablero) {
-            try {
-                const ok = await this.actualizarTablero(piezaRotada);
-                return {
-                    tetramino: piezaRotada,
-                    exito: ok,
-                    motivo: ok ? undefined : 'COLISION'
-                };
-            } catch (error) {
-                return {
-                    tetramino: piezaRotada,
-                    exito: false,
-                    motivo: error.message || 'ERROR_TABLERO'
-                };
-            }
+    // Método que coincide con el diagrama
+    girarTetramino(tetramino: any): any {
+        if (!tetramino || !tetramino.matriz) {
+            throw new Error('Tetramino inválido o sin matriz');
         }
 
-        // In orchestrated mode or when update not requested, simply return the rotated piece
-        return { tetramino: piezaRotada, exito: true };
+        // Por defecto girar a la derecha si no se especifica dirección
+        return {
+            ...tetramino,
+            matriz: this.rotarMatriz(tetramino.matriz, 'derecha'),
+        };
+    }
+
+    async rotar(dto: RotacionRequestDto): Promise<RotacionResponseDto> {
+        // Validate we have valid input before proceeding
+        if (!dto) {
+            return {
+                tetramino: null,
+                exito: false,
+                motivo: 'Datos de rotación inválidos'
+            };
+        }
+
+        // Make sure we have a direction, default to 'derecha' if not provided
+        const direccion = dto.direccion || 'derecha';
+
+        try {
+            // First, check if we have a tetramino with matriz. If not, get the active one from the board
+            let tetramino = dto.tetramino;
+
+            // If tetramino is not provided in the request or is invalid, fetch it from the verificadortablero service
+            if (!tetramino || !tetramino.matriz) {
+                try {
+                    const tableroUrl = process.env.TABLERO_URL || 'http://verificadortablero:3000';
+                    const response = await axios.get(`${tableroUrl}/tablero/activo`);
+
+                    if (response?.data?.pieza) {
+                        tetramino = response.data.pieza;
+                    } else {
+                        // Still no tetramino, return an error
+                        return {
+                            tetramino: null,
+                            exito: false,
+                            motivo: 'No se encontró un tetramino para rotar'
+                        };
+                    }
+                } catch (error) {
+                    console.error('Error fetching active tetramino:', error.message);
+                    return {
+                        tetramino: null,
+                        exito: false,
+                        motivo: 'Error al obtener el tetramino activo'
+                    };
+                }
+            }
+
+            // Check again if tetramino has matriz after our attempts to get it
+            if (!tetramino || !tetramino.matriz) {
+                return {
+                    tetramino: tetramino || null,
+                    exito: false,
+                    motivo: 'Tetramino inválido o sin matriz'
+                };
+            }
+
+            // Create a new rotated tetramino
+            const piezaRotada = {
+                ...tetramino,
+                matriz: this.rotarMatriz(tetramino.matriz, direccion),
+            };
+
+            // In coordinated mode, update the board if requested
+            if (process.env.MODO === 'coordinada' && dto.actualizarTablero) {
+                try {
+                    const ok = await this.actualizarTablero(piezaRotada);
+                    return {
+                        tetramino: piezaRotada,
+                        exito: ok,
+                        motivo: ok ? undefined : 'COLISION'
+                    };
+                } catch (error) {
+                    return {
+                        tetramino: piezaRotada,
+                        exito: false,
+                        motivo: error.message || 'ERROR_TABLERO'
+                    };
+                }
+            }
+
+            // In orchestrated mode or when update not requested, simply return the rotated piece
+            return { tetramino: piezaRotada, exito: true };
+        } catch (error) {
+            console.error('Error en rotación:', error.message);
+            return {
+                tetramino: null,
+                exito: false,
+                motivo: 'Error interno al rotar: ' + error.message
+            };
+        }
     }
 
     /** Only used in coordinated mode */

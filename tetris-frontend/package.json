@@ -1,0 +1,25 @@
+{
+  "name": "tetris-frontend",
+  "version": "1.0.0",
+  "description": "Frontend UI for Tetris microservices",
+  "main": "index.html",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "start": "npm run dev",
+    "serve": "node index.js",
+    "prod": "npm run build && npm run serve"
+  },
+  "keywords": [
+    "tetris",
+    "preact",
+    "tailwind",
+    "vite"
+  ],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "vite": "^5.0.0"
+  }
+}

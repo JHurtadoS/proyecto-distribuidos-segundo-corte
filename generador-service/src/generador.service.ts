@@ -52,20 +52,26 @@ export class GeneradorService {
         ]
     };
 
+    // Método que coincide con el diagrama
+    getTetramino(): TetraminoDto {
+        // Elige al azar un TetraminoTipo
+        const tipos = Object.values(TetraminoTipo);
+        const tipoAleatorio = tipos[Math.floor(Math.random() * tipos.length)];
+
+        // Crea TetraminoDto con la forma base
+        const tetramino: TetraminoDto = {
+            tipo: tipoAleatorio,
+            matriz: [...this.formasBase[tipoAleatorio]]
+        };
+
+        this.validarMatriz(tetramino.matriz);
+        return tetramino;
+    }
+
     async generarTetramino(): Promise<GenerarTetraminoResponseDto> {
         try {
-            // Elige al azar un TetraminoTipo
-            const tipos = Object.values(TetraminoTipo);
-            const tipoAleatorio = tipos[Math.floor(Math.random() * tipos.length)];
-
-            // Crea TetraminoDto con la forma base
-            const tetramino: TetraminoDto = {
-                tipo: tipoAleatorio,
-                matriz: [...this.formasBase[tipoAleatorio]]
-            };
-
-            // Verificar que la matriz sigue siendo 4x4 y solo contiene 0|1
-            this.validarMatriz(tetramino.matriz);
+            // Generar nuevo tetramino aleatorio usando el método getTetramino
+            const tetramino = this.getTetramino();
 
             // Comprobar el modo (coordinada u orquestada)
             const modo = process.env.MODO || 'coordinada';
@@ -74,33 +80,40 @@ export class GeneradorService {
                 // Determina rotación aleatoria (0-3 veces)
                 const rotaciones = Math.floor(Math.random() * 4);
 
+                let tetraminoRotado = tetramino;
                 if (rotaciones > 0) {
                     // Rotar el tetramino llamando al servicio Girador
-                    const tetraminoRotado = await this.rotarTetramino(tetramino, rotaciones);
-
-                    // Intentar colocar el tetramino en el tablero
-                    const resultado = await this.colocarEnTablero(tetraminoRotado);
-
-                    return {
-                        exito: resultado.exito,
-                        motivo: resultado.motivo
-                    };
-                } else {
-                    // Intentar colocar el tetramino sin rotar en el tablero
-                    const resultado = await this.colocarEnTablero(tetramino);
-
-                    return {
-                        exito: resultado.exito,
-                        motivo: resultado.motivo
-                    };
+                    tetraminoRotado = await this.rotarTetramino(tetramino, rotaciones);
                 }
-            } else {
-                // En modo orquestado, solo devolver el tetramino sin rotar
+
+                // Intentar colocar el tetramino en el tablero
+                const resultado = await this.colocarEnTablero(tetraminoRotado);
+
+                // Obtener el estado actual del tablero después de la colocación
+                let tablero = undefined;
+                if (resultado.exito) {
+                    try {
+                        const tableroUrl = process.env.TABLERO_URL || 'http://verificadortablero:3000';
+                        const respTablero = await axios.get(`${tableroUrl}/tablero`);
+                        tablero = respTablero.data;
+                    } catch (error) {
+                        console.error('Error al obtener el tablero:', error.message);
+                    }
+                }
+
                 return {
-                    exito: true,
-                    tetramino: tetramino
+                    exito: resultado.exito,
+                    tetramino: tetraminoRotado, // Incluimos el tetramino generado
+                    tablero, // Incluimos el estado del tablero
+                    motivo: resultado.motivo
                 };
             }
+
+            // En modo orquestado, solo devolver el tetramino sin rotar
+            return {
+                exito: true,
+                tetramino: tetramino
+            };
         } catch (error) {
             return {
                 exito: false,
@@ -109,10 +122,11 @@ export class GeneradorService {
         }
     }
 
+    // Validar que la matriz del tetramino sea 4x4 y solo contenga 0 y 1
     private validarMatriz(matriz: number[][]): void {
-        // Verificar que la matriz es 4x4
+        // Verificar dimensiones
         if (matriz.length !== 4) {
-            throw new BadRequestException('La matriz debe tener 4 filas');
+            throw new BadRequestException('La matriz del tetramino debe ser 4x4');
         }
 
         for (const fila of matriz) {
@@ -120,10 +134,9 @@ export class GeneradorService {
                 throw new BadRequestException('Cada fila de la matriz debe tener 4 columnas');
             }
 
-            // Verificar que solo contiene 0|1
-            for (const valor of fila) {
-                if (valor !== 0 && valor !== 1) {
-                    throw new BadRequestException('La matriz solo debe contener valores 0 o 1');
+            for (const celda of fila) {
+                if (celda !== 0 && celda !== 1) {
+                    throw new BadRequestException('La matriz solo puede contener valores 0 y 1');
                 }
             }
         }
