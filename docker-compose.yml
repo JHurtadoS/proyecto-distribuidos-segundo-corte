@@ -1,0 +1,41 @@
+version: "3.8"
+
+services:
+  generador:
+    build: ./generador-service
+    container_name: generador
+    environment:
+      - PORT=3000
+      - MODO=${MODO:-coordinada}
+      - GIRADOR_URL=http://girador:3000
+      - TABLERO_URL=http://verificadortablero:3000
+    ports:
+      - "3001:3000"
+    depends_on:
+      - girador
+      - verificadortablero
+    networks:
+      - tetris-net
+
+  # Placeholder para futuros servicios
+  girador:
+    # Este servicio se implementará en las próximas fases
+    image: nginx:alpine
+    container_name: girador
+    ports:
+      - "3002:3000"
+    networks:
+      - tetris-net
+
+  verificadortablero:
+    # Este servicio se implementará en las próximas fases
+    image: nginx:alpine
+    container_name: verificadortablero
+    ports:
+      - "3003:3000"
+    networks:
+      - tetris-net
+
+networks:
+  tetris-net:
+    driver: bridge
