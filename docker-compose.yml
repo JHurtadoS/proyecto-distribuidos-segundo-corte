@@ -17,13 +17,17 @@ services:
     networks:
       - tetris-net
 
-  # Placeholder para futuros servicios
   girador:
-    # Este servicio se implementará en las próximas fases
-    image: nginx:alpine
+    build: ./girador-service
     container_name: girador
+    environment:
+      - PORT=3000
+      - MODO=${MODO:-coordinada}
+      - TABLERO_URL=http://verificadortablero:3000
     ports:
       - "3002:3000"
+    depends_on:
+      - verificadortablero
     networks:
       - tetris-net
 
